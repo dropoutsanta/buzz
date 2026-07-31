@@ -937,3 +937,105 @@ mod flush_barrier {
         );
     }
 }
+
+// ── apply_persona_snapshot parallelism normalization ──────────────────────────
+
+#[test]
+fn apply_persona_snapshot_normalizes_openclaw_parallelism() {
+    let mut record = sample_record();
+    record.parallelism = 10;
+    apply_persona_snapshot(
+        &mut record,
+        &AgentDefinition {
+            runtime: Some("openclaw".into()),
+            ..sample_persona()
+        },
+    );
+    assert_eq!(
+        record.parallelism,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+/// Persona runtime=None, stale agent_command="openclaw": must NOT cap because
+/// record_agent_command falls back to default (uncapped), not stale openclaw.
+#[test]
+fn apply_persona_snapshot_persona_runtime_none_stale_openclaw_not_capped() {
+    let mut record = sample_record();
+    record.agent_command = "openclaw".to_string();
+    record.parallelism = 10;
+    apply_persona_snapshot(
+        &mut record,
+        &AgentDefinition {
+            runtime: None,
+            ..sample_persona()
+        },
+    );
+    assert_eq!(
+        record.parallelism, 10,
+        "persona runtime=None must not cap via stale agent_command"
+    );
+}
+
+/// Same for stale goose: default-command fallback, goose is uncapped anyway.
+#[test]
+fn apply_persona_snapshot_persona_runtime_none_stale_goose_not_capped() {
+    let mut record = sample_record();
+    record.agent_command = "goose".to_string();
+    record.parallelism = 10;
+    apply_persona_snapshot(
+        &mut record,
+        &AgentDefinition {
+            runtime: None,
+            ..sample_persona()
+        },
+    );
+    assert_eq!(
+        record.parallelism, 10,
+        "persona runtime=None + stale goose must not cap"
+    );
+}
+
+// ── apply_persona_snapshot: stale-pin drop for preset harnesses ───────────────
+/// Persona→OpenClaw: stale Goose override must be dropped, parallelism capped.
+/// Regression: `known_acp_runtime_exact("openclaw")` returned None (preset, not
+/// builtin), so the stale-pin block never fired before this fix.
+#[test]
+fn apply_persona_snapshot_goose_to_openclaw_drops_stale_goose_pin() {
+    let mut record = sample_record();
+    record.parallelism = 10;
+    record.agent_command_override = Some("goose".to_string());
+    let persona = AgentDefinition {
+        runtime: Some("openclaw".to_string()),
+        ..sample_persona()
+    };
+    apply_persona_snapshot(&mut record, &persona);
+    assert_eq!(
+        record.agent_command_override, None,
+        "stale goose pin must be dropped"
+    );
+    assert_eq!(
+        record.parallelism,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+/// Persona→Goose: stale OpenClaw override must be dropped, parallelism uncapped.
+/// Regression: `known_acp_runtime("openclaw")` returned None (preset, not builtin)
+/// so the inner block never fired before this fix.
+#[test]
+fn apply_persona_snapshot_openclaw_to_goose_drops_stale_openclaw_pin() {
+    let mut record = sample_record();
+    record.parallelism = 5;
+    record.agent_command_override = Some("openclaw".to_string());
+    let persona = AgentDefinition {
+        runtime: Some("goose".to_string()),
+        ..sample_persona()
+    };
+    apply_persona_snapshot(&mut record, &persona);
+    assert_eq!(
+        record.agent_command_override, None,
+        "stale openclaw pin must be dropped"
+    );
+    assert_eq!(record.parallelism, 5, "goose has no cap");
+}
