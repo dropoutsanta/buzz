@@ -85,8 +85,17 @@ static NEST_DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new
 /// `is_dev` should be `true` when the running binary is a dev build — i.e.
 /// when the Tauri app-data directory name starts with `"xyz.block.buzz.app.dev"`.
 /// Pass `false` for production (signed DMG) builds.
+///
+/// Release builds may set `BUZZ_STORAGE_NAMESPACE` to isolate the nest for an
+/// externally branded app variant (example: `fam` → `~/.buzz-fam`).
 pub fn init_nest_dir(is_dev: bool) {
-    let suffix = if is_dev { NEST_DIR_DEV } else { NEST_DIR_PROD };
+    let suffix = if is_dev {
+        NEST_DIR_DEV.to_string()
+    } else if let Some(ns) = crate::app_state::storage_namespace() {
+        format!(".buzz-{ns}")
+    } else {
+        NEST_DIR_PROD.to_string()
+    };
     let path = dirs::home_dir().map(|h| h.join(suffix));
     // set() is a no-op when already initialized, which is correct: only the
     // first call (at boot, before any filesystem work) should win.

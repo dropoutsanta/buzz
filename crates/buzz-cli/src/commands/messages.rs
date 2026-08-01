@@ -571,6 +571,27 @@ pub struct SendMessageParams {
     pub mentions: Vec<String>,
 }
 
+/// Expand newline escapes when argv content is unmistakably intended as
+/// multi-line Markdown. Agent subprocesses occasionally pass a rendered answer
+/// as one shell argument containing `\\n\\n` or `\\n- `, even though the ACP
+/// prompt tells them to use stdin. Publishing that verbatim makes Desktop show
+/// the escape characters and breaks lists.
+///
+/// Keep the heuristic deliberately narrow so messages discussing a literal
+/// `\\n` sequence are left alone. Apply it to stdin as well as argv because
+/// agent-rendered Markdown commonly arrives through `--content -`.
+fn expand_markdown_newline_escapes(content: &str) -> String {
+    let looks_like_multiline_markdown = content.contains("\\n\\n")
+        || content.contains("\\n- ")
+        || content.contains("\\n* ")
+        || (1..=9).any(|number| content.contains(&format!("\\n{number}. ")));
+    if looks_like_multiline_markdown {
+        content.replace("\\r\\n", "\n").replace("\\n", "\n")
+    } else {
+        content.to_owned()
+    }
+}
+
 pub async fn cmd_send_message(
     client: &BuzzClient,
     mut p: SendMessageParams,
@@ -580,6 +601,7 @@ pub async fn cmd_send_message(
     // quoting — the source of countless self-inflicted command-substitution
     // bugs for agent and human users alike.
     p.content = read_or_stdin(&p.content)?;
+    p.content = expand_markdown_newline_escapes(&p.content);
     validate_content_size(&p.content)?;
     if let Some(ref r) = p.reply_to {
         validate_hex64(r)?;
@@ -993,9 +1015,9 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_mention_pubkeys, find_root_from_tags, match_profiles_by_name, merge_message_mentions,
-        missing_members, normalize_explicit_mentions, parse_member_pubkeys,
-        resolve_names_to_pubkeys,
+        event_mention_pubkeys, expand_markdown_newline_escapes, find_root_from_tags,
+        match_profiles_by_name, merge_message_mentions, missing_members,
+        normalize_explicit_mentions, parse_member_pubkeys, resolve_names_to_pubkeys,
     };
     use buzz_sdk::mentions::{
         extract_at_mentions_with_known, extract_at_names, match_names_to_profiles, MentionProfile,
@@ -1011,6 +1033,21 @@ mod tests {
     const PK_VALID_A: &str = "35c18ae273fccfaf80d629e20e7f8721b90499379addff533054acc2504c12b4";
     const PK_VALID_B: &str = "c6237ef84fa537c78dcee78efd2d4e59f728859c7f194da42ac51ededfa0be05";
     const PK_VALID_C: &str = "f4a42a97e594b77bdbd8ee35191c8b28a94a4cb871d96f32921558275421fb68";
+
+    #[test]
+    fn escaped_markdown_paragraphs_and_lists_become_real_newlines() {
+        let raw = "**Headline**\\n\\nDetails\\n- first\\n- second";
+        assert_eq!(
+            expand_markdown_newline_escapes(raw),
+            "**Headline**\n\nDetails\n- first\n- second"
+        );
+    }
+
+    #[test]
+    fn isolated_literal_newline_escape_is_preserved() {
+        let raw = r"Write \n to represent a newline";
+        assert_eq!(expand_markdown_newline_escapes(raw), raw);
+    }
 
     #[test]
     fn root_marker_wins_over_reply_marker() {
